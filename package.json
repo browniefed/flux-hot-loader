@@ -27,6 +27,7 @@
   },
   "homepage": "https://github.com/gaearon/flux-hot-loader",
   "dependencies": {
+    "loader-utils": "^0.2.6",
     "source-map": "^0.1.40"
   }
 }
