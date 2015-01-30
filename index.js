@@ -14,21 +14,50 @@ module.exports = function (source, map) {
   var options = utils.parseQuery(this.query),
       filename = path.basename(this.resourcePath),
       separator = '\n\n',
+      prependText,
       appendText,
       node,
       result;
 
+  prependText = [
+    '/* FLUX HOT LOADER */',
+    '(function () {',
+      'if (module.hot) {',
+        'var dispatcher = require(' + JSON.stringify(options.dispatcher) + ');',
+
+        'if (!dispatcher.__fluxHotLoaderUnpatchedRegister) {',
+        '  dispatcher.__fluxHotLoaderUnpatchedRegister = dispatcher.register;',
+        '}',
+
+        'module.hot.__fluxHotLoaderPreviousRegister = dispatcher.register;',
+        'module.hot.__fluxHotLoaderRegisteredCallbacks = {};',
+
+        'dispatcher.register = function register(callback) {',
+        '  var dispatchToken = dispatcher.__fluxHotLoaderUnpatchedRegister.apply(dispatcher, arguments);',
+        '  module.hot.__fluxHotLoaderRegisteredCallbacks[dispatchToken] = callback;',
+        '  return dispatchToken;',
+        '};',
+      '}',
+    '})();',
+
+    'try {'
+  ].join('\n');
+
   appendText = [
     '/* FLUX HOT LOADER */',
+    '} finally {',
+      'if (module.hot) {',
+        '(function () {',
+          'var dispatcher = require(' + JSON.stringify(options.dispatcher) + ');',
+          'dispatcher.register = module.hot.__fluxHotLoaderPreviousRegister;',
+        '})();',
+      '}',
+    '}',
+
     'if (module.hot) {',
       '(function () {',
         'if (!module.exports) {',
         '  return;',
-        '}',
-
-        'var canRewind = !!module.exports.dispatchToken;',
-        'if (!canRewind) {',
-          'console.warn(' + JSON.stringify(filename) + ' + " is missing a dispatchToken on module.exports.");',
         '}',
 
         'if (typeof module.exports.emitChange !== "function") {',
@@ -37,39 +66,35 @@ module.exports = function (source, map) {
         '}',
 
         'var dispatcher = require(' + JSON.stringify(options.dispatcher) + '),',
+            'newCallbacks = module.hot.__fluxHotLoaderRegisteredCallbacks,',
+            'allCallbacks = dispatcher["$Dispatcher_callbacks"],',
+            'unpatchedRegister = dispatcher.__fluxHotLoaderUnpatchedRegister,',
             'actions = [],',
             'spyListenerId;',
 
         'module.hot.dispose(function (data) {',
-          'if (canRewind) {',
-            'dispatcher.unregister(spyListenerId);',
-            'dispatcher.unregister(module.exports.dispatchToken);',
+          'dispatcher.unregister(spyListenerId);',
+
+          'for (var dispatchToken in newCallbacks) {',
+            'if (newCallbacks.hasOwnProperty(dispatchToken)) {',
+              'dispatcher.unregister(dispatchToken);',
+            '}',
           '}',
 
-          'data.dispatchToken = module.exports.dispatchToken;',
           'data.events = module.exports._events;',
           'data.actions = actions;',
         '});',
 
-        'if (canRewind) {',
-          'spyListenerId = dispatcher.register(function (payload) {',
-            'actions.push(payload);',
-          '});',
-        '}',
+        'spyListenerId = unpatchedRegister.call(dispatcher, function (payload) {',
+          'actions.push(payload);',
+        '});',
 
         'if (module.hot.data) {',
           'module.exports._events = module.hot.data.events;',
         '}',
 
-        'if (module.hot.data && canRewind) {',
+        'if (module.hot.data) {',
           'actions = module.hot.data.actions;',
-
-          'var callbacks = dispatcher["$Dispatcher_callbacks"],',
-              'cb = callbacks[module.exports.dispatchToken];',
-
-          'callbacks[module.hot.data.dispatchToken] = cb;',
-          'delete callbacks[module.exports.dispatchToken];',
-          'module.exports.dispatchToken = module.hot.data.dispatchToken;',
 
           'var emitChange = module.exports.emitChange,',
               'waitFor = dispatcher.waitFor;',
@@ -78,7 +103,13 @@ module.exports = function (source, map) {
           'dispatcher.waitFor = function () {}',
 
           'try {',
-            'actions.forEach(cb);',
+            'actions.forEach(function (action) {',
+              'for (var dispatchToken in newCallbacks) {',
+                'if (newCallbacks.hasOwnProperty(dispatchToken)) {',
+                  'newCallbacks[dispatchToken](action);',
+                '}',
+              '}',
+            '});',
           '} finally {',
             'module.exports.emitChange = emitChange;',
             'dispatcher.waitFor = waitFor;',
@@ -91,6 +122,7 @@ module.exports = function (source, map) {
 
   if (this.sourceMap === false) {
     return this.callback(null, [
+      prependText,
       source,
       appendText
     ].join(separator));
@@ -101,6 +133,7 @@ module.exports = function (source, map) {
   }
 
   node = new SourceNode(null, null, null, [
+    new SourceNode(null, null, this.resourcePath, appendText),
     SourceNode.fromStringWithSourceMap(source, new SourceMapConsumer(map)),
     new SourceNode(null, null, this.resourcePath, appendText)
   ]).join(separator);
